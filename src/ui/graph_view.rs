@@ -178,38 +178,15 @@ fn optimize_branch_display(
         }
     };
 
-    // Helper to create label with optional abbreviation
-    let make_label = |name: &str, suffix: Option<&str>| -> String {
-        let (label, abbrev_width) = if let Some(s) = suffix {
-            (
-                format!("[{} {}]", name, s),
-                MAX_REF_LABEL_WIDTH - s.len() - 3,
-            )
-        } else {
-            (format!("[{}]", name), MAX_REF_LABEL_WIDTH)
-        };
-
-        if display_width(&label) <= MAX_REF_LABEL_WIDTH {
-            return label;
-        }
-
-        let abbrev = abbreviate_ref_label(name, abbrev_width, 0, '[', ']');
-        if let Some(s) = suffix {
-            abbrev.replace(']', &format!(" {}]", s))
-        } else {
-            abbrev
-        }
-    };
-
     // Process branches in original order (matches tab order from filter_remote_duplicates)
-    let mut result: Vec<(String, Style)> = Vec::new();
+    let mut branches = Vec::new();
     for name in branch_names {
         if let Some(local_name) = name.strip_prefix("origin/") {
             // Remote branch: skip if matching local exists
             if local_branches.contains(local_name) {
                 continue;
             }
-            result.push((make_label(name, None), make_style(name)));
+            branches.push((name.as_str(), None));
         } else {
             // Local branch: check for matching remote
             let remote_name = format!("origin/{}", name);
@@ -218,35 +195,32 @@ fn optimize_branch_display(
             } else {
                 None
             };
-            result.push((make_label(name, suffix), make_style(name)));
+            branches.push((name.as_str(), suffix));
         }
     }
 
-    // Collapse multiple branches to single + count
-    if result.len() > 1 {
-        // Find selected index directly from branch_names, clamped to result bounds
-        let selected_idx = selected_branch_name
-            .and_then(|sel| {
-                branch_names
-                    .iter()
-                    .position(|n| n == sel || n.ends_with(&format!("/{}", sel)))
-            })
-            .unwrap_or(0)
-            .min(result.len().saturating_sub(1));
-
-        let (label, style) = &result[selected_idx];
-        let clean_name = label
-            .trim_start_matches('[')
-            .split([']', ' '])
-            .next()
-            .unwrap_or(label);
-        let abbreviated =
-            abbreviate_ref_label(clean_name, MAX_REF_LABEL_WIDTH, result.len() - 1, '[', ']');
-
-        return vec![(abbreviated, *style)];
+    // Select from the same deduplicated branches used for navigation and counting.
+    let (name, origin_suffix) = branches
+        .iter()
+        .find(|(name, _)| Some(*name) == selected_branch_name)
+        .copied()
+        .unwrap_or(branches[0]);
+    let mut suffix = origin_suffix.map(|s| format!(" {s}")).unwrap_or_default();
+    if branches.len() > 1 {
+        suffix.push_str(&format!(" +{}", branches.len() - 1));
     }
 
-    result
+    // Reserve space for the origin marker and count so only the name is abbreviated.
+    let mut label = abbreviate_ref_label(
+        name,
+        MAX_REF_LABEL_WIDTH.saturating_sub(display_width(&suffix)),
+        0,
+        '[',
+        ']',
+    );
+    label.insert_str(label.len() - 1, &suffix);
+
+    vec![(label, make_style(name))]
 }
 
 /// Truncate a string to the specified display width.
@@ -653,6 +627,56 @@ impl<'a> StatefulWidget for GraphViewWidget<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collapsed_branches_preserve_origin_marker() {
+        let names = ["main", "dev", "origin/dev", "origin/main"].map(String::from);
+
+        for (selected, expected) in [
+            (None, "[main ↔ origin +1]"),
+            (Some("main"), "[main ↔ origin +1]"),
+            (Some("dev"), "[dev ↔ origin +1]"),
+        ] {
+            let result = optimize_branch_display(&names, true, 0, selected, true);
+
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].0, expected);
+            if selected.is_some() {
+                assert_eq!(result[0].1.fg, Some(Color::Black));
+            }
+        }
+    }
+
+    #[test]
+    fn collapsed_branches_select_from_deduplicated_names() {
+        let names = ["main", "origin/main", "origin/zzz", "zzz", "zzz2"].map(String::from);
+        let result = optimize_branch_display(&names, true, 0, Some("zzz"), true);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "[zzz ↔ origin +2]");
+        assert_eq!(result[0].1.fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn collapsed_synced_branches_abbreviate_only_the_name() {
+        for name in [
+            "feature/this-is-a-very-long-branch-name-12345",
+            "feature/とても長いブランチ名のテストです-12345",
+        ] {
+            let names = vec![
+                name.to_string(),
+                format!("origin/{name}"),
+                "main".to_string(),
+            ];
+            let result = optimize_branch_display(&names, false, 0, Some(name), false);
+            let label = &result[0].0;
+
+            assert!(label.starts_with("[feature/"), "{label}");
+            assert!(label.contains("..."), "{label}");
+            assert!(label.ends_with("12345 ↔ origin +1]"), "{label}");
+            assert!(display_width(label) <= MAX_REF_LABEL_WIDTH, "{label}");
+        }
+    }
 
     #[test]
     fn optimize_tag_display_returns_empty_for_no_tags() {
