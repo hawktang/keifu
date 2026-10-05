@@ -305,33 +305,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 /// Render branch info popup when multiple branches exist on selected node
 fn render_branch_info_popup(frame: &mut Frame, app: &App, graph_area: Rect) {
-    let selected_branches = app.selected_node_branches();
+    let Some(selected_idx) = app.graph_list_state.selected() else {
+        return;
+    };
+    let branches = &app.graph_layout.nodes[selected_idx].branch_labels;
 
     // Only show popup in Normal mode with multiple branches
-    if selected_branches.len() <= 1 || !matches!(app.mode, crate::app::AppMode::Normal) {
+    if branches.len() <= 1 || !matches!(app.mode, crate::app::AppMode::Normal) {
         return;
     }
 
-    let selected_idx = app.graph_list_state.selected().unwrap_or(0);
-    let origin_branches: std::collections::HashSet<_> = app.graph_layout.nodes[selected_idx]
-        .branch_names
-        .iter()
-        .filter_map(|name| name.strip_prefix("origin/"))
-        .collect();
-    let branches: Vec<_> = selected_branches
-        .iter()
-        .map(|&name| (name, origin_branches.contains(name)))
-        .collect();
-    let popup_height = (selected_branches.len() + 2).min(10) as u16;
+    let popup_height = (branches.len() + 2).min(10) as u16;
     let max_branch_len = branches
         .iter()
-        .map(|(name, has_origin)| {
-            graph_view::display_width(name)
-                + if *has_origin {
-                    graph_view::display_width(dialog::ORIGIN_SUFFIX)
-                } else {
-                    0
-                }
+        .map(|branch| {
+            graph_view::display_width(&branch.name)
+                + graph_view::display_width(&branch.remote_suffix)
         })
         .max()
         .unwrap_or(10);
@@ -358,7 +347,7 @@ fn render_branch_info_popup(frame: &mut Frame, app: &App, graph_area: Rect) {
 
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
     frame.render_widget(
-        BranchInfoPopup::new(&branches, app.selected_branch_name()),
+        BranchInfoPopup::new(branches, app.selected_branch_name()),
         popup_area,
     );
 }

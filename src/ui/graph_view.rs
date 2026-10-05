@@ -11,6 +11,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::{
     app::App,
+    git::branch::BranchLabel,
     git::graph::{CellType, GraphNode},
     graph::colors::get_color_by_index,
 };
@@ -129,34 +130,20 @@ impl<'a> GraphViewWidget<'a> {
 }
 
 /// Optimize branch name display
-/// - If a local branch matches its origin/xxx, show "xxx <-> origin"
+/// - Matching remotes are listed after the local branch, e.g. "main ↔ origin, upstream"
 /// - Otherwise, show each name separately
 /// - Render in bold with the graph color, wrapped in brackets
 /// - Selected branch is shown with inverted colors
 fn optimize_branch_display(
-    branch_names: &[String],
+    branches: &[BranchLabel],
     is_head: bool,
     color_index: usize,
     selected_branch_name: Option<&str>,
     is_row_selected: bool,
 ) -> Vec<(String, Style)> {
-    use std::collections::HashSet;
-
-    if branch_names.is_empty() {
+    if branches.is_empty() {
         return Vec::new();
     }
-
-    // Split local and remote branches (HashSet for O(1) lookup)
-    let local_branches: HashSet<&str> = branch_names
-        .iter()
-        .filter(|n| !n.starts_with("origin/"))
-        .map(|s| s.as_str())
-        .collect();
-    let remote_branches: HashSet<&str> = branch_names
-        .iter()
-        .filter(|n| n.starts_with("origin/"))
-        .map(|s| s.as_str())
-        .collect();
 
     // Determine base color: main branch stays blue; other HEADs are green
     let is_main_branch = color_index == crate::graph::colors::MAIN_BRANCH_COLOR;
@@ -178,41 +165,26 @@ fn optimize_branch_display(
         }
     };
 
-    // Process branches in original order (matches tab order from filter_remote_duplicates)
-    let mut branches = Vec::new();
-    for name in branch_names {
-        if let Some(local_name) = name.strip_prefix("origin/") {
-            // Remote branch: skip if matching local exists
-            if local_branches.contains(local_name) {
-                continue;
-            }
-            branches.push((name.as_str(), None));
-        } else {
-            // Local branch: check for matching remote
-            let remote_name = format!("origin/{}", name);
-            let suffix = if remote_branches.contains(remote_name.as_str()) {
-                Some("↔ origin")
-            } else {
-                None
-            };
-            branches.push((name.as_str(), suffix));
-        }
-    }
-
     // Select from the same deduplicated branches used for navigation and counting.
-    let (name, origin_suffix) = branches
+    let branch = branches
         .iter()
-        .find(|(name, _)| Some(*name) == selected_branch_name)
-        .copied()
-        .unwrap_or(branches[0]);
-    let mut suffix = origin_suffix.map(|s| format!(" {s}")).unwrap_or_default();
-    if branches.len() > 1 {
-        suffix.push_str(&format!(" +{}", branches.len() - 1));
-    }
+        .find(|branch| Some(branch.name.as_str()) == selected_branch_name)
+        .unwrap_or(&branches[0]);
+    let count = if branches.len() > 1 {
+        format!(" +{}", branches.len() - 1)
+    } else {
+        String::new()
+    };
+    let mut suffix = truncate_with_ellipsis(
+        &branch.remote_suffix,
+        MAX_REF_LABEL_WIDTH
+            .saturating_sub(2 + display_width(&count) + display_width(&branch.name).min(4)),
+    );
+    suffix.push_str(&count);
 
-    // Reserve space for the origin marker and count so only the name is abbreviated.
+    // Reserve space for the fitted remote list and count before abbreviating the name.
     let mut label = abbreviate_ref_label(
-        name,
+        &branch.name,
         MAX_REF_LABEL_WIDTH.saturating_sub(display_width(&suffix)),
         0,
         '[',
@@ -220,12 +192,12 @@ fn optimize_branch_display(
     );
     label.insert_str(label.len() - 1, &suffix);
 
-    vec![(label, make_style(name))]
+    vec![(label, make_style(&branch.name))]
 }
 
 /// Truncate a string to the specified display width.
 /// Handles VS16 which changes preceding character to emoji presentation (width 2).
-pub(super) fn truncate_to_width(s: &str, max_width: usize) -> String {
+fn truncate_to_width(s: &str, max_width: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut result = String::new();
     let mut current_width = 0;
@@ -247,6 +219,19 @@ pub(super) fn truncate_to_width(s: &str, max_width: usize) -> String {
         }
     }
     result
+}
+
+/// Truncate by terminal columns without splitting a Unicode character.
+pub(super) fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
+    if display_width(s) <= max_width {
+        s.to_string()
+    } else {
+        format!(
+            "{}{}",
+            truncate_to_width(s, max_width.saturating_sub(3)),
+            ".".repeat(max_width.min(3))
+        )
+    }
 }
 
 /// Determine which right-side elements (date, author, hash) to display based on available width.
@@ -506,9 +491,9 @@ fn render_graph_line<'a>(
 
     // === Left-aligned: branch names + message ===
 
-    // Optimize branch names (compact when local matches origin/local)
+    // Render the grouped labels used for navigation and the branch popup.
     let branch_display = optimize_branch_display(
-        &node.branch_names,
+        &node.branch_labels,
         node.is_head,
         node.color_index,
         selected_branch_name,
@@ -628,6 +613,23 @@ impl<'a> StatefulWidget for GraphViewWidget<'a> {
 mod tests {
     use super::*;
 
+    fn labels(names: &[String]) -> Vec<BranchLabel> {
+        use crate::git::{branch::group_branch_labels, BranchInfo};
+
+        let branches: Vec<_> = names
+            .iter()
+            .map(|name| BranchInfo {
+                name: name.clone(),
+                is_head: false,
+                is_remote: name.starts_with("origin/"),
+                remote_name: name.starts_with("origin/").then(|| "origin".to_string()),
+                upstream: None,
+                tip_oid: git2::Oid::zero(),
+            })
+            .collect();
+        group_branch_labels(&branches.iter().collect::<Vec<_>>())
+    }
+
     #[test]
     fn collapsed_branches_preserve_origin_marker() {
         let names = ["main", "dev", "origin/dev", "origin/main"].map(String::from);
@@ -637,7 +639,7 @@ mod tests {
             (Some("main"), "[main ↔ origin +1]"),
             (Some("dev"), "[dev ↔ origin +1]"),
         ] {
-            let result = optimize_branch_display(&names, true, 0, selected, true);
+            let result = optimize_branch_display(&labels(&names), true, 0, selected, true);
 
             assert_eq!(result.len(), 1);
             assert_eq!(result[0].0, expected);
@@ -650,7 +652,7 @@ mod tests {
     #[test]
     fn collapsed_branches_select_from_deduplicated_names() {
         let names = ["main", "origin/main", "origin/zzz", "zzz", "zzz2"].map(String::from);
-        let result = optimize_branch_display(&names, true, 0, Some("zzz"), true);
+        let result = optimize_branch_display(&labels(&names), true, 0, Some("zzz"), true);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "[zzz ↔ origin +2]");
@@ -668,7 +670,7 @@ mod tests {
                 format!("origin/{name}"),
                 "main".to_string(),
             ];
-            let result = optimize_branch_display(&names, false, 0, Some(name), false);
+            let result = optimize_branch_display(&labels(&names), false, 0, Some(name), false);
             let label = &result[0].0;
 
             assert!(label.starts_with("[feature/"), "{label}");
@@ -676,6 +678,25 @@ mod tests {
             assert!(label.ends_with("12345 ↔ origin +1]"), "{label}");
             assert!(display_width(label) <= MAX_REF_LABEL_WIDTH, "{label}");
         }
+    }
+
+    #[test]
+    fn many_remotes_keep_branch_name_and_count_within_label_width() {
+        let branches = [
+            BranchLabel {
+                name: "main".to_string(),
+                remote_suffix: " ↔ origin, origin_2, origin_3, origin_4, origin_5".to_string(),
+            },
+            BranchLabel {
+                name: "dev".to_string(),
+                remote_suffix: String::new(),
+            },
+        ];
+        let rendered = optimize_branch_display(&branches, true, 0, Some("main"), true);
+        let label = &rendered[0].0;
+        assert!(label.starts_with("[main ↔ origin"), "{label}");
+        assert!(label.ends_with("... +1]"), "{label}");
+        assert!(display_width(label) <= MAX_REF_LABEL_WIDTH, "{label}");
     }
 
     #[test]
@@ -735,6 +756,9 @@ mod tests {
             lane: 0,
             color_index: 0,
             branch_names: vec!["feature/this-is-a-very-long-branch-name-123456789".to_string()],
+            branch_labels: labels(&[
+                "feature/this-is-a-very-long-branch-name-123456789".to_string()
+            ]),
             tag_names: vec![
                 "release/this-is-a-very-long-tag-name-123456789".to_string(),
                 "release/zzz-second-tag".to_string(),
