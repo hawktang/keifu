@@ -60,7 +60,7 @@ fn char_width_with_vs16(c: char, next_char: Option<char>) -> usize {
 
 /// Calculate display width of a string.
 /// Handles VS16 which changes preceding character to emoji presentation (width 2).
-fn display_width(s: &str) -> usize {
+pub(super) fn display_width(s: &str) -> usize {
     let chars: Vec<char> = s.chars().collect();
     let mut width = 0;
     let mut i = 0;
@@ -225,7 +225,7 @@ fn optimize_branch_display(
 
 /// Truncate a string to the specified display width.
 /// Handles VS16 which changes preceding character to emoji presentation (width 2).
-fn truncate_to_width(s: &str, max_width: usize) -> String {
+pub(super) fn truncate_to_width(s: &str, max_width: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut result = String::new();
     let mut current_width = 0;

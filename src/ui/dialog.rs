@@ -8,12 +8,20 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget},
 };
 
+use super::graph_view::{display_width, truncate_to_width};
+
+pub(super) const ORIGIN_SUFFIX: &str = " ↔ origin";
+
 /// Truncate a string to fit within max_width, adding "..." if needed
 fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
-    if s.len() <= max_width {
+    if display_width(s) <= max_width {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_width.saturating_sub(3)])
+        format!(
+            "{}{}",
+            truncate_to_width(s, max_width.saturating_sub(3)),
+            ".".repeat(max_width.min(3))
+        )
     }
 }
 
@@ -113,12 +121,13 @@ impl<'a> Widget for ConfirmDialog<'a> {
 
 /// Branch info popup (shown when multiple branches exist on selected node)
 pub struct BranchInfoPopup<'a> {
-    branches: &'a [&'a str],
+    // Raw branch names and whether their origin counterpart points at this commit.
+    branches: &'a [(&'a str, bool)],
     selected_branch: Option<&'a str>,
 }
 
 impl<'a> BranchInfoPopup<'a> {
-    pub fn new(branches: &'a [&'a str], selected_branch: Option<&'a str>) -> Self {
+    pub fn new(branches: &'a [(&'a str, bool)], selected_branch: Option<&'a str>) -> Self {
         Self {
             branches,
             selected_branch,
@@ -141,7 +150,7 @@ impl<'a> Widget for BranchInfoPopup<'a> {
         block.render(area, buf);
 
         // Render branch list
-        for (i, branch) in self.branches.iter().enumerate() {
+        for (i, (branch, has_origin)) in self.branches.iter().enumerate() {
             if i as u16 >= inner.height {
                 break;
             }
@@ -158,11 +167,13 @@ impl<'a> Widget for BranchInfoPopup<'a> {
             };
 
             let prefix = if is_selected { "▶ " } else { "  " };
+            let suffix = if *has_origin { ORIGIN_SUFFIX } else { "" };
             let max_width = inner.width as usize;
             let display = format!(
-                "{}{}",
+                "{}{}{}",
                 prefix,
-                truncate_with_ellipsis(branch, max_width.saturating_sub(2))
+                truncate_with_ellipsis(branch, max_width.saturating_sub(2 + display_width(suffix))),
+                suffix
             );
 
             buf.set_string(inner.x, y, &display, style);

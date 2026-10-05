@@ -2471,6 +2471,95 @@ mod tests {
     }
 
     #[test]
+    fn branch_popup_preserves_origin_marker_for_unselected_branch() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let (_tempdir, repo) = init_repo();
+        repo.repo.set_head("refs/heads/fix/example").unwrap();
+        let oid = commit_file(&repo.repo, "a.txt", "a\n", "shared tip");
+        for name in [
+            "refs/heads/main",
+            "refs/heads/revert/example",
+            "refs/remotes/origin/main",
+        ] {
+            repo.repo
+                .reference(name, oid, false, "test branch")
+                .unwrap();
+        }
+        let mut app = make_app_from_repo(repo);
+        let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+
+        for (keys, selected, graph_label, popup_label) in [
+            (
+                Action::GoToTop,
+                "fix/example",
+                "[fix/example +2]",
+                "  main ↔ origin",
+            ),
+            (
+                Action::BranchRight,
+                "main",
+                "[main ↔ origin +2]",
+                "▶ main ↔ origin",
+            ),
+            (Action::ToggleRemoteBranches, "main", "[main +2]", "▶ main"),
+        ] {
+            app.handle_action(keys).unwrap();
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert_eq!(app.selected_branch_name(), Some(selected));
+            assert!(screen.contains(graph_label), "{screen}");
+            assert!(screen.contains(popup_label), "{screen}");
+            assert_eq!(app.selected_node_branches().len(), 3);
+            if !app.show_remote_branches() {
+                assert!(!screen.contains("↔ origin"), "{screen}");
+            }
+        }
+    }
+
+    #[test]
+    fn branch_popup_keeps_origin_marker_when_truncating_long_names() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        for name in [
+            "feature/this-is-a-very-long-branch-name-12345",
+            "feature/とても長いブランチ名のテストです-12345",
+        ] {
+            let (_tempdir, repo) = init_repo();
+            repo.repo.set_head("refs/heads/main").unwrap();
+            let oid = commit_file(&repo.repo, "a.txt", "a\n", "shared tip");
+            for prefix in ["refs/heads/", "refs/remotes/origin/"] {
+                repo.repo
+                    .reference(&format!("{prefix}{name}"), oid, false, "test branch")
+                    .unwrap();
+            }
+            let mut app = make_app_from_repo(repo);
+            for width in [110, 32, 20] {
+                let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+                terminal
+                    .draw(|frame| crate::ui::draw(frame, &mut app))
+                    .unwrap();
+                let screen: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(screen.contains("... ↔ origin"), "{screen}");
+            }
+        }
+    }
+
+    #[test]
     fn toggle_tags_hides_and_shows_tag_labels() {
         let (_tempdir, repo) = init_repo();
         let oid = commit_file(&repo.repo, "a.txt", "a\n", "init");

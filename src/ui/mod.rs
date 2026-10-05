@@ -312,16 +312,34 @@ fn render_branch_info_popup(frame: &mut Frame, app: &App, graph_area: Rect) {
         return;
     }
 
-    let popup_height = (selected_branches.len() + 2).min(10) as u16;
-    let max_branch_len = selected_branches
+    let selected_idx = app.graph_list_state.selected().unwrap_or(0);
+    let origin_branches: std::collections::HashSet<_> = app.graph_layout.nodes[selected_idx]
+        .branch_names
         .iter()
-        .map(|b| b.len())
+        .filter_map(|name| name.strip_prefix("origin/"))
+        .collect();
+    let branches: Vec<_> = selected_branches
+        .iter()
+        .map(|&name| (name, origin_branches.contains(name)))
+        .collect();
+    let popup_height = (selected_branches.len() + 2).min(10) as u16;
+    let max_branch_len = branches
+        .iter()
+        .map(|(name, has_origin)| {
+            graph_view::display_width(name)
+                + if *has_origin {
+                    graph_view::display_width(dialog::ORIGIN_SUFFIX)
+                } else {
+                    0
+                }
+        })
         .max()
         .unwrap_or(10);
-    let popup_width = (max_branch_len + 6).min(50) as u16;
+    let popup_width = (max_branch_len + 6)
+        .min(50)
+        .min(graph_area.width.saturating_sub(2) as usize) as u16;
 
     // Calculate selected row's screen position (add 1 for border)
-    let selected_idx = app.graph_list_state.selected().unwrap_or(0);
     let offset = app.graph_list_state.offset();
     let selected_screen_y = graph_area.y + 1 + selected_idx.saturating_sub(offset) as u16;
 
@@ -340,7 +358,7 @@ fn render_branch_info_popup(frame: &mut Frame, app: &App, graph_area: Rect) {
 
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
     frame.render_widget(
-        BranchInfoPopup::new(&selected_branches, app.selected_branch_name()),
+        BranchInfoPopup::new(&branches, app.selected_branch_name()),
         popup_area,
     );
 }
