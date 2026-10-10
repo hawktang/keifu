@@ -22,7 +22,17 @@ use super::{render_placeholder_block, MIN_WIDGET_HEIGHT, MIN_WIDGET_WIDTH};
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
+/// Load the syntax and theme sets ahead of the first file open
+pub fn prewarm() {
+    LazyLock::force(&SYNTAX_SET);
+    LazyLock::force(&THEME_SET);
+}
+
 const THEME_NAME: &str = "base16-eighties.dark";
+
+/// Lines longer than this (bytes) are shown unhighlighted: syntect's regexes
+/// take seconds on minified/generated lines hundreds of KB long.
+const MAX_HIGHLIGHT_LINE_LEN: usize = 2048;
 
 // Diff background colors
 const BG_ADD: Color = Color::Rgb(0, 50, 0);
@@ -140,9 +150,29 @@ fn compute_word_emphasis(
 
 // --- Syntax highlighting helpers ---
 
-fn highlight_line_owned(hl: &mut HighlightLines, content: &str) -> Vec<(SyntectStyle, String)> {
+/// Once a line is skipped (too long) or fails to parse, the parser state is
+/// unknown, so `hl` is dropped and the rest of that side renders plain rather
+/// than resuming with stale state (e.g. inside a comment the skipped line closed).
+fn highlight_line_owned(
+    hl: &mut Option<HighlightLines>,
+    content: &str,
+) -> Vec<(SyntectStyle, String)> {
+    let plain = || {
+        let style = SyntectStyle {
+            foreground: syntect::highlighting::Color::WHITE,
+            ..SyntectStyle::default()
+        };
+        vec![(style, content.to_string())]
+    };
+    let Some(h) = hl
+        .as_mut()
+        .filter(|_| content.len() <= MAX_HIGHLIGHT_LINE_LEN)
+    else {
+        *hl = None;
+        return plain();
+    };
     let line = format!("{}\n", content);
-    match hl.highlight_line(&line, &SYNTAX_SET) {
+    match h.highlight_line(&line, &SYNTAX_SET) {
         Ok(spans) => {
             let result: Vec<_> = spans
                 .into_iter()
@@ -156,7 +186,10 @@ fn highlight_line_owned(hl: &mut HighlightLines, content: &str) -> Vec<(SyntectS
                 result
             }
         }
-        Err(_) => vec![(SyntectStyle::default(), content.to_string())],
+        Err(_) => {
+            *hl = None;
+            plain()
+        }
     }
 }
 
@@ -404,8 +437,8 @@ pub fn build_highlighted_lines(content: &FileDiffContent) -> (Vec<Line<'static>>
     // Maintain highlight state across hunks so multi-line constructs
     // (block comments, strings, etc.) that span hunk boundaries are
     // colored correctly.
-    let mut old_hl = HighlightLines::new(syntax, theme);
-    let mut new_hl = HighlightLines::new(syntax, theme);
+    let mut old_hl = Some(HighlightLines::new(syntax, theme));
+    let mut new_hl = Some(HighlightLines::new(syntax, theme));
 
     for hunk in &content.hunks {
         // Blank line before each hunk header for readability
@@ -554,5 +587,25 @@ impl<'a> Widget for FileDiffViewWidget<'a> {
             .scroll((0, h_offset));
 
         Widget::render(paragraph, area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skipped_long_line_does_not_leak_stale_parser_state() {
+        let syntax = SYNTAX_SET.find_syntax_by_extension("rs").unwrap();
+        let mut hl = Some(HighlightLines::new(syntax, &THEME_SET.themes[THEME_NAME]));
+        let comment_fg = highlight_line_owned(&mut hl, "/*")[0].0.foreground;
+        highlight_line_owned(
+            &mut hl,
+            &format!("{}*/", "a".repeat(MAX_HIGHLIGHT_LINE_LEN)),
+        );
+        let after = highlight_line_owned(&mut hl, "fn main() {}");
+        assert!(after
+            .iter()
+            .all(|(style, _)| style.foreground != comment_fg));
     }
 }

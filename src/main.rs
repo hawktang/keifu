@@ -11,7 +11,7 @@ use keifu::{
     app::App,
     config::FileView,
     debug_server,
-    event::{EventReader, InputEvent},
+    event::{self, EventReader, InputEvent},
     git::configure_git_extensions,
     keybindings::map_key_to_action,
     logging, mouse, tui, ui,
@@ -60,6 +60,9 @@ fn main() -> Result<()> {
 
     configure_git_extensions()?;
 
+    // Load syntax highlighting in the background so the first file open is fast
+    std::thread::spawn(ui::file_diff_view::prewarm);
+
     // Initialize application
     let mut app = App::new()?;
     if let Some(file_view) = cli.file_view {
@@ -92,7 +95,12 @@ fn main() -> Result<()> {
         }
 
         // Process all queued events before the next render
-        let batch = event_reader.poll_events()?;
+        let poll_timeout = if app.has_pending_diff() {
+            event::BUSY_POLL_TIMEOUT
+        } else {
+            event::IDLE_POLL_TIMEOUT
+        };
+        let batch = event_reader.poll_events(poll_timeout)?;
         if batch.had_input() {
             last_user_input = Instant::now();
         }
