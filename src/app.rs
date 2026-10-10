@@ -14,7 +14,7 @@ use git2::Oid;
 
 use crate::{
     action::Action,
-    config::Config,
+    config::{Config, FileView},
     git::{
         build_graph,
         graph::GraphLayout,
@@ -1580,6 +1580,14 @@ impl App {
         Ok(())
     }
 
+    pub fn set_file_view(&mut self, file_view: FileView) {
+        self.config.ui.file_view = file_view;
+    }
+
+    pub fn file_view_replace(&self) -> bool {
+        self.config.ui.file_view == FileView::Replace
+    }
+
     fn enter_file_diff(
         &mut self,
         file_index: usize,
@@ -2737,5 +2745,99 @@ mod tests {
                 .count,
             refresh_count
         );
+    }
+
+    /// Replace-mode app on a commit touching 20 long files, with a long message
+    fn replace_mode_app() -> (
+        TempDir,
+        App,
+        ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) {
+        let tempdir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(tempdir.path()).unwrap();
+        let body: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let mut index = repo.index().unwrap();
+        for i in 0..19 {
+            let path = format!("file_{i:02}.txt");
+            fs::write(tempdir.path().join(&path), &body).unwrap();
+            index.add_path(Path::new(&path)).unwrap();
+        }
+        index.write().unwrap();
+        let message: String = (0..20).map(|i| format!("message line {i}\n")).collect();
+        let oid = commit_file(&repo, "file_19.txt", &body, &message);
+
+        let mut app = make_app_from_repo(GitRepository::open(tempdir.path()).unwrap());
+        app.set_file_view(FileView::Replace);
+        app.diff_cache = Some(CommitDiffInfo::from_commit(&repo, oid).unwrap());
+        app.diff_cache_oid = Some(oid);
+        let terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(110, 30)).unwrap();
+        (tempdir, app, terminal)
+    }
+
+    /// Render and return the text of the Changed Files pane
+    fn render_files_pane(
+        terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+        app: &mut App,
+    ) -> String {
+        terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+        let area = app.layout.files;
+        let buf = terminal.backend().buffer();
+        (area.top()..area.bottom())
+            .flat_map(|y| (area.left()..area.right()).map(move |x| buf[(x, y)].symbol()))
+            .collect()
+    }
+
+    fn open_diff_position(app: &App) -> (usize, usize) {
+        match app.mode {
+            AppMode::FileDiff {
+                file_index,
+                scroll_offset,
+                ..
+            } => (file_index, scroll_offset),
+            _ => panic!("not in FileDiff"),
+        }
+    }
+
+    #[test]
+    fn replace_mode_file_list_keeps_open_file_visible() {
+        let (_tempdir, mut app, mut terminal) = replace_mode_app();
+        app.open_file_select(19);
+        app.handle_action(Action::OpenFileDiff).unwrap();
+        assert!(render_files_pane(&mut terminal, &mut app).contains("file_19.txt"));
+
+        app.handle_action(Action::PrevFile).unwrap();
+        assert!(render_files_pane(&mut terminal, &mut app).contains("file_18.txt"));
+    }
+
+    #[test]
+    fn replace_mode_wheel_scrolls_pane_under_pointer() {
+        use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+
+        let (_tempdir, mut app, mut terminal) = replace_mode_app();
+        app.open_file_select(0);
+        app.handle_action(Action::OpenFileDiff).unwrap();
+        render_files_pane(&mut terminal, &mut app);
+        let wheel = |app: &mut App, rect: Rect| {
+            crate::mouse::handle_mouse(
+                app,
+                MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: rect.x + 2,
+                    row: rect.y + 2,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+        };
+        let layout = app.layout;
+
+        wheel(&mut app, layout.commit_detail);
+        assert_eq!(app.detail_scroll, 1);
+        assert_eq!(open_diff_position(&app), (0, 0));
+
+        wheel(&mut app, layout.files);
+        assert_eq!(open_diff_position(&app), (1, 0));
+
+        wheel(&mut app, layout.graph);
+        assert_eq!(open_diff_position(&app), (1, 3));
     }
 }
