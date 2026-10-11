@@ -91,8 +91,16 @@ fn selection_area(app: &App, position: Position) -> Rect {
     };
     panes
         .into_iter()
-        .map(|area| area.inner(Margin::new(1, 1)).intersection(app.screen.area))
+        .map(|area| area.intersection(app.screen.area))
         .find(|area| area.contains(position))
+        .map(|area| {
+            let inner = area.inner(Margin::new(1, 1));
+            if inner.contains(position) {
+                inner
+            } else {
+                area
+            }
+        })
         .unwrap_or(app.screen.area)
 }
 

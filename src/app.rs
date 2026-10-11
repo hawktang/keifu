@@ -2985,6 +2985,60 @@ mod tests {
     }
 
     #[test]
+    fn border_started_selection_stays_in_its_pane() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::layout::Position;
+
+        for open_diff in [false, true] {
+            let (_tempdir, mut app, mut terminal) = replace_mode_app();
+            if open_diff {
+                app.open_file_select(0);
+                app.handle_action(Action::OpenFileDiff).unwrap();
+            }
+            render_files_pane(&mut terminal, &mut app);
+            let files = app.layout.files;
+            for (x, y) in [
+                (files.x + 3, files.y),
+                (files.x, files.y + 2),
+                (files.right() - 1, files.y + 2),
+                (files.x + 3, files.bottom() - 1),
+            ] {
+                let before = terminal.backend().buffer().clone();
+                let event = MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: x,
+                    row: y,
+                    modifiers: KeyModifiers::NONE,
+                };
+                crate::mouse::handle_mouse(&mut app, event);
+                crate::mouse::handle_mouse(
+                    &mut app,
+                    MouseEvent {
+                        kind: MouseEventKind::Drag(MouseButton::Left),
+                        column: files.x + 20,
+                        row: files.y + 4,
+                        ..event
+                    },
+                );
+                render_files_pane(&mut terminal, &mut app);
+                let text = app.text_selection.as_ref().unwrap().text();
+                assert!(text.contains("file_0"), "{text}");
+                assert!(!text.contains("Author"), "{text}");
+                assert!(!text.contains("message line"), "{text}");
+
+                let buffer = terminal.backend().buffer();
+                for y in files.y..files.bottom() {
+                    for x in 0..110 {
+                        if !files.contains(Position::new(x, y)) {
+                            assert_eq!(buffer[(x, y)].bg, before[(x, y)].bg, "{x},{y}: {text}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn replace_mode_selection_excludes_the_neighboring_file_list() {
         use crate::debug_server::{handle_request, DebugRequest};
 
