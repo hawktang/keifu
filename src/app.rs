@@ -2563,6 +2563,49 @@ mod tests {
     }
 
     #[test]
+    fn grouped_branch_label_preserves_count_and_brackets_in_narrow_graphs() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        for remotes in [
+            ["origin", "origin_2", "origin_3"],
+            ["origin", "リモートの長い名前", "別のリモートの長い名前"],
+        ] {
+            let (_tempdir, repo) = init_repo();
+            repo.repo.set_head("refs/heads/main").unwrap();
+            let oid = commit_file(&repo.repo, "a.txt", "a\n", "shared tip");
+            repo.repo
+                .reference("refs/heads/dev", oid, false, "test branch")
+                .unwrap();
+            for remote in remotes {
+                repo.repo
+                    .remote(remote, "https://example.com/repo.git")
+                    .unwrap();
+                repo.repo
+                    .reference(
+                        &format!("refs/remotes/{remote}/main"),
+                        oid,
+                        false,
+                        "test branch",
+                    )
+                    .unwrap();
+            }
+            let mut app = make_app_from_repo(repo);
+            for width in [20, 32, 40, 110] {
+                let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+                terminal
+                    .draw(|frame| crate::ui::draw(frame, &mut app))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let row: String = (0..width).map(|x| buffer[(x, 1)].symbol()).collect();
+
+                assert!(row.contains("[main"), "{width}: {row}");
+                assert!(row.contains(" +1]"), "{width}: {row}");
+                assert_eq!(buffer[(width - 1, 1)].symbol(), "│", "{width}: {row}");
+            }
+        }
+    }
+
+    #[test]
     fn branch_popup_preserves_origin_marker_for_unselected_branch() {
         use ratatui::{backend::TestBackend, Terminal};
 

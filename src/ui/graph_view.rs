@@ -136,6 +136,7 @@ impl<'a> GraphViewWidget<'a> {
 /// - Selected branch is shown with inverted colors
 fn optimize_branch_display(
     branches: &[BranchLabel],
+    max_width: usize,
     is_head: bool,
     color_index: usize,
     selected_branch_name: Option<&str>,
@@ -175,17 +176,20 @@ fn optimize_branch_display(
     } else {
         String::new()
     };
+    let max_width = max_width.min(MAX_REF_LABEL_WIDTH);
+    if max_width < ABBREVIATED_LABEL_OVERHEAD + display_width(&count) {
+        return Vec::new();
+    }
     let mut suffix = truncate_with_ellipsis(
         &branch.remote_suffix,
-        MAX_REF_LABEL_WIDTH
-            .saturating_sub(2 + display_width(&count) + display_width(&branch.name).min(4)),
+        max_width.saturating_sub(2 + display_width(&count) + display_width(&branch.name).min(4)),
     );
     suffix.push_str(&count);
 
     // Reserve space for the fitted remote list and count before abbreviating the name.
     let mut label = abbreviate_ref_label(
         &branch.name,
-        MAX_REF_LABEL_WIDTH.saturating_sub(display_width(&suffix)),
+        max_width.saturating_sub(display_width(&suffix)),
         0,
         '[',
         ']',
@@ -491,9 +495,11 @@ fn render_graph_line<'a>(
 
     // === Left-aligned: branch names + message ===
 
+    let remaining_for_content = total_width.saturating_sub(left_width);
     // Render the grouped labels used for navigation and the branch popup.
     let branch_display = optimize_branch_display(
         &node.branch_labels,
+        remaining_for_content.saturating_sub(1),
         node.is_head,
         node.color_index,
         selected_branch_name,
@@ -514,8 +520,6 @@ fn render_graph_line<'a>(
         .sum::<usize>()
         + if !branch_display.is_empty() { 1 } else { 0 };
 
-    let graph_width = left_width;
-    let remaining_for_content = total_width.saturating_sub(graph_width);
     let max_tag_width = remaining_for_content
         .saturating_sub(branch_width)
         .saturating_sub(MIN_COMMIT_MESSAGE_WIDTH)
@@ -639,7 +643,14 @@ mod tests {
             (Some("main"), "[main ↔ origin +1]"),
             (Some("dev"), "[dev ↔ origin +1]"),
         ] {
-            let result = optimize_branch_display(&labels(&names), true, 0, selected, true);
+            let result = optimize_branch_display(
+                &labels(&names),
+                MAX_REF_LABEL_WIDTH,
+                true,
+                0,
+                selected,
+                true,
+            );
 
             assert_eq!(result.len(), 1);
             assert_eq!(result[0].0, expected);
@@ -652,7 +663,14 @@ mod tests {
     #[test]
     fn collapsed_branches_select_from_deduplicated_names() {
         let names = ["main", "origin/main", "origin/zzz", "zzz", "zzz2"].map(String::from);
-        let result = optimize_branch_display(&labels(&names), true, 0, Some("zzz"), true);
+        let result = optimize_branch_display(
+            &labels(&names),
+            MAX_REF_LABEL_WIDTH,
+            true,
+            0,
+            Some("zzz"),
+            true,
+        );
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "[zzz ↔ origin +2]");
@@ -670,7 +688,14 @@ mod tests {
                 format!("origin/{name}"),
                 "main".to_string(),
             ];
-            let result = optimize_branch_display(&labels(&names), false, 0, Some(name), false);
+            let result = optimize_branch_display(
+                &labels(&names),
+                MAX_REF_LABEL_WIDTH,
+                false,
+                0,
+                Some(name),
+                false,
+            );
             let label = &result[0].0;
 
             assert!(label.starts_with("[feature/"), "{label}");
@@ -692,7 +717,8 @@ mod tests {
                 remote_suffix: String::new(),
             },
         ];
-        let rendered = optimize_branch_display(&branches, true, 0, Some("main"), true);
+        let rendered =
+            optimize_branch_display(&branches, MAX_REF_LABEL_WIDTH, true, 0, Some("main"), true);
         let label = &rendered[0].0;
         assert!(label.starts_with("[main ↔ origin"), "{label}");
         assert!(label.ends_with("... +1]"), "{label}");
